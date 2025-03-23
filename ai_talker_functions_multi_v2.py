@@ -2,27 +2,105 @@ import asyncio
 import aiohttp
 import json
 import os
+import boto3
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from datetime import datetime
 
 # Load environment variables
 load_dotenv()
 
+# Fetch variables
+aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+aws_region = os.getenv("AWS_REGION")
+dynamodb_table_name = os.getenv("DYNAMODB_TABLE")
+
+required_env_vars = [aws_access_key_id, aws_secret_access_key, aws_region, dynamodb_table_name]
+if not all(required_env_vars):
+    raise EnvironmentError("Missing one or more AWS-related environment variables in .env file.")
+
+
+# Initialize DynamoDB client using credentials from .env
+dynamodb = boto3.resource(
+    'dynamodb',
+    region_name=aws_region,
+    aws_access_key_id=aws_access_key_id,
+    aws_secret_access_key=aws_secret_access_key
+)
+
+# Access the table
+table = dynamodb.Table(dynamodb_table_name)
+
+org_id = os.getenv("ORG_ID")
+use_case = os.getenv("USE_CASE")
+bot_name = os.getenv("BOT_NAME")
+
+if not all([org_id, use_case, bot_name]):
+    raise ValueError("ORG_ID, USE_CASE, or BOT_NAME not set in .env file")
+
+def get_prompt_from_dynamodb(field_name, org_id, use_case, bot_name):
+    try:
+        response = table.scan(
+            FilterExpression=(
+                boto3.dynamodb.conditions.Attr('OrgId').eq(org_id) &
+                boto3.dynamodb.conditions.Attr('UseCase').eq(use_case) &
+                boto3.dynamodb.conditions.Attr('BotName').eq(bot_name)
+            )
+        )
+        items = response.get('Items', [])
+        if items:
+            return items[0].get(field_name)
+        else:
+            print(f"No matching item found for {field_name}.")
+            return None
+    except ClientError as e:
+        print(f"Error retrieving {field_name} from DynamoDB: {e.response['Error']['Message']}")
+        return None
+
+
+# === Fetch prompts for each step ===
+greeting_prompt = get_prompt_from_dynamodb('GREETING', org_id, use_case, bot_name)
+account_management_prompt = get_prompt_from_dynamodb('ACCOUNT_MANAGEMENT', org_id, use_case, bot_name)
+closing_prompt = get_prompt_from_dynamodb('CLOSING', org_id, use_case, bot_name)
+common_states_prompt = get_prompt_from_dynamodb('COMMON_STATES', org_id, use_case, bot_name)
+connections_prompt = get_prompt_from_dynamodb('Connections', org_id, use_case, bot_name)
+error_handling_prompt = get_prompt_from_dynamodb('ERROR_HANDLING', org_id, use_case, bot_name)
+feedback_prompt = get_prompt_from_dynamodb('FEEDBACK', org_id, use_case, bot_name)
+info_provision_prompt = get_prompt_from_dynamodb('INFO_PROVISION', org_id, use_case, bot_name)
+needs_assessment_prompt = get_prompt_from_dynamodb('NEEDS_ASSESSMENT', org_id, use_case, bot_name)
+support_prompt = get_prompt_from_dynamodb('SUPPORT', org_id, use_case, bot_name)
+transaction_prompt = get_prompt_from_dynamodb('TRANSACTION', org_id, use_case, bot_name)
+
 # Create a directory to store conversation data
 os.makedirs("conversation_data", exist_ok=True)
 
+# Define base step prompts (with a placeholder)
 step_prompts = {
-    "GREETING": "You are a friendly AI assistant. Greet the customer warmly and engage in a brief conversation to make them feel welcome. Ask for their name and how they're doing today. Be polite and engaging. Continue the conversation until the customer is ready to move on.",
-    "NEEDS_ASSESSMENT": "You are a helpful AI assistant. Ask the customer about their interests or needs. Try to understand what product or service they might be looking for. Ask follow-up questions to gather more details about their preferences, budget, and any specific requirements they might have. Continue the conversation until you have a clear understanding of their needs.",
-    "INFO_PROVISION": "You are a knowledgeable AI assistant. Provide detailed information about the product or service the customer is interested in. Ensure they understand the key features and benefits. Ask if they have any questions and provide thorough answers.",
+    "GREETING": (
+        "You are a friendly AI assistant. Greet the customer warmly and engage in a brief conversation to make them feel welcome. "
+        "Ask for their name and how they're doing today. Be polite and engaging. "
+        "Continue the conversation until the customer provides {greeting_prompt}."
+        "Also make sure you ask all the required information step by step."
+    ),
+    "NEEDS_ASSESSMENT": "You are a helpful AI assistant. Ask the customer about their interests or needs. Try to understand what product or service they might be looking for. Ask the following follow-up questions {needs_assessment_prompt} to have a clear understanding of their needs.",
+    "INFO_PROVISION": "You are a knowledgeable AI assistant. Provide detailed information about the product or service the customer is interested in. Get information from {info_provision_prompt}.",
     "TRANSACTION": "You are a helpful AI sales assistant. Guide the customer through the purchase process. Collect necessary details for the transaction, such as quantity, shipping address, or payment method. Confirm each piece of information and ask if they have any questions about the process.",
     "SUPPORT": "You are a patient AI support assistant. Listen to the customer's issue and ask for any necessary details to understand the problem fully. Offer clear and helpful solutions. Follow up to ensure the solution works for them.",
     "FEEDBACK": "You are a courteous AI assistant. Politely ask the customer for their feedback on the product, service, or their interaction with you. Encourage honest and constructive feedback. Ask follow-up questions to get more detailed insights.",
     "ACCOUNT_MANAGEMENT": "You are a secure AI account manager. Help the customer with their account-related request. Ensure to maintain privacy and security protocols while assisting them. Ask for necessary information step by step.",
-    "CLOSING": "You are a grateful AI assistant. Thank the customer sincerely for their time and interaction. Summarize the key points of your conversation and ask if there's anything else they need before concluding.",
+    "CLOSING": "You are a grateful AI assistant. Thank the customer sincerely for their time and interaction. Summarize the key points of your conversation. {closing_prompt}. Keep the conversation engaging and do everything step by step.",
     "ERROR_HANDLING": "You are an attentive AI troubleshooter. Carefully listen to any issues or errors the customer reports. Ask for clarification if needed and offer clear steps to resolve the problem. Confirm if the issue is resolved after providing solutions.",
     "COMMON_STATES": "You are a versatile AI assistant. Address the customer's general inquiry or common conversation topic. Provide helpful and relevant information based on their specific question or comment. Ask follow-up questions to ensure you've fully addressed their needs."
 }
+
+# Fallback for insert_statements if not found
+#insert_statements = insert_statements or "their name and the reason for reaching out"
+
+# Format dynamic insert only if prompt is not None
+#if greeting_prompt:
+    #greeting_prompt = greeting_prompt.format(insert_statements=insert_statements)
+
 
 class ConversationStep:
     def __init__(self, function):
