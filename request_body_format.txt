@@ -1,0 +1,3 @@
+{
+  "steps": ["GREETING", "NEEDS_ASSESSMENT", "INFO_PROVISION", "CLOSING"]
+}
